@@ -1,21 +1,18 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Review, InterviewReview, SalarySubmission, Question, Mentor } from '../types';
+import { Review, Question, Mentor } from '../types';
 import StarRating from '../components/StarRating';
 import { getCompanyReviewSummary } from '../services/geminiService';
 import { storageService } from '../services/storageService';
 
-const CompanyDetail: React.FC = () => {
+const CollegeDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<'overview' | 'interviews' | 'salaries' | 'qa' | 'mentors'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'qa' | 'mentors'>('overview');
   const [sortBy, setSortBy] = useState<'recent' | 'helpful' | 'rating'>('recent');
-  
-  // Data State
+
   const [reviews, setReviews] = useState<Review[]>([]);
-  const [interviews, setInterviews] = useState<InterviewReview[]>([]);
-  const [salaries, setSalaries] = useState<SalarySubmission[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [mentors, setMentors] = useState<Mentor[]>([]);
   
@@ -24,14 +21,12 @@ const CompanyDetail: React.FC = () => {
   const [newQuestion, setNewQuestion] = useState('');
   const [newAnswer, setNewAnswer] = useState<{qid: string, text: string} | null>(null);
 
-  const company = id ? storageService.getCompanyById(id) : undefined;
+  const college = id ? storageService.getCollegeById(id) : undefined;
 
   const loadAllData = () => {
     if (id) {
-      setReviews(storageService.getReviewsForCompany(id));
-      setInterviews(storageService.getInterviewsForCompany(id));
-      setSalaries(storageService.getSalariesForCompany(id));
-      setQuestions(storageService.getQuestionsForCompany(id));
+      setReviews(storageService.getReviewsForCompany(id)); // Reusing review storage
+      setQuestions(storageService.getQuestionsForCompany(id)); // Reusing Q&A storage
       setMentors(storageService.getMentorsForEntity(id));
     }
   };
@@ -43,83 +38,59 @@ const CompanyDetail: React.FC = () => {
   }, [id]);
 
   useEffect(() => {
-    if (company && reviews.length > 0) {
+    if (college && reviews.length > 0) {
       setIsSummaryLoading(true);
-      getCompanyReviewSummary(company.name, reviews).then(summary => {
+      getCompanyReviewSummary(college.name, reviews).then(summary => {
         setAiSummary(summary);
         setIsSummaryLoading(false);
       });
     }
-  }, [company, reviews.length]);
+  }, [college, reviews.length]);
+
+  const avgRating = useMemo(() => {
+    if (reviews.length === 0) return 0;
+    const total = reviews.reduce((acc, r) => acc + r.rating, 0);
+    return total / reviews.length;
+  }, [reviews]);
 
   // --- Sorting Logic ---
   const sortedReviews = useMemo(() => {
-      const sorted = [...reviews];
-      if (sortBy === 'recent') {
-          return sorted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      } else if (sortBy === 'helpful') {
-          return sorted.sort((a, b) => (b.helpfulVotes || 0) - (a.helpfulVotes || 0));
-      } else if (sortBy === 'rating') {
-          return sorted.sort((a, b) => b.rating - a.rating);
-      }
-      return sorted;
+    const sorted = [...reviews];
+    if (sortBy === 'recent') {
+        return sorted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    } else if (sortBy === 'helpful') {
+        return sorted.sort((a, b) => (b.helpfulVotes || 0) - (a.helpfulVotes || 0));
+    } else if (sortBy === 'rating') {
+        return sorted.sort((a, b) => b.rating - a.rating);
+    }
+    return sorted;
   }, [reviews, sortBy]);
 
   const handleUpvote = (reviewId: string) => {
-      storageService.upvoteReview(reviewId);
+    storageService.upvoteReview(reviewId);
   };
 
-  // --- 2. Review Decay (Smart Rating) Logic ---
-  const smartRating = useMemo(() => {
-    if (reviews.length === 0) return 0;
-    const sixMonthsAgo = Date.now() - (180 * 24 * 60 * 60 * 1000);
-    let totalScore = 0; 
-    let totalWeight = 0;
+  // Specific College Stats Calculation
+  const collegeStats = useMemo(() => {
+      if (reviews.length === 0) return null;
+      const sums = reviews.reduce((acc, r) => ({
+          mess: acc.mess + (r.messRating || 0),
+          wifi: acc.wifi + (r.wifiRating || 0),
+          infra: acc.infra + (r.infrastructureRating || 0),
+          placement: acc.placement + (r.placementRating || 0),
+          strictness: acc.strictness + (r.strictnessRating || 0),
+          count: acc.count + 1
+      }), { mess: 0, wifi: 0, infra: 0, placement: 0, strictness: 0, count: 0 });
 
-    reviews.forEach(r => {
-      // If review is newer than 6 months, weight 1.0, else 0.5
-      const weight = new Date(r.createdAt).getTime() > sixMonthsAgo ? 1.0 : 0.5;
-      totalScore += r.rating * weight;
-      totalWeight += weight;
-    });
-
-    return totalWeight > 0 ? totalScore / totalWeight : 0;
+      return {
+          mess: sums.count ? (sums.mess / sums.count).toFixed(1) : 0,
+          wifi: sums.count ? (sums.wifi / sums.count).toFixed(1) : 0,
+          infra: sums.count ? (sums.infra / sums.count).toFixed(1) : 0,
+          placement: sums.count ? (sums.placement / sums.count).toFixed(1) : 0,
+          strictness: sums.count ? (sums.strictness / sums.count).toFixed(1) : 0
+      };
   }, [reviews]);
 
-  // --- 1. Ghosting Meter Logic ---
-  const ghostingRate = useMemo(() => {
-    if (interviews.length === 0) return 0;
-    const ghostedCount = interviews.filter(i => i.wasGhosted).length;
-    return Math.round((ghostedCount / interviews.length) * 100);
-  }, [interviews]);
-
-  // --- 3. Department Vibe Logic ---
-  const deptRatings = useMemo(() => {
-    const map: Record<string, {total: number, count: number}> = {};
-    reviews.forEach(r => {
-      if (!map[r.department]) map[r.department] = { total: 0, count: 0 };
-      map[r.department].total += r.rating;
-      map[r.department].count += 1;
-    });
-    return Object.entries(map).map(([dept, data]) => ({
-      dept,
-      avg: data.total / data.count,
-      count: data.count
-    })).sort((a,b) => b.avg - a.avg);
-  }, [reviews]);
-
-  // --- 4. Salary Reality Logic ---
-  const salaryStats = useMemo(() => {
-    if (salaries.length === 0) return null;
-    const totalCTC = salaries.reduce((acc, s) => acc + s.ctc, 0);
-    const totalInHand = salaries.reduce((acc, s) => acc + s.inHand, 0);
-    return {
-      avgCTC: Math.round(totalCTC / salaries.length),
-      avgInHand: Math.round(totalInHand / salaries.length)
-    };
-  }, [salaries]);
-
-  // --- 5. Q&A Handlers ---
   const handleAskQuestion = (e: React.FormEvent) => {
     e.preventDefault();
     if (newQuestion.trim() && id) {
@@ -135,18 +106,14 @@ const CompanyDetail: React.FC = () => {
     }
   };
 
-  // --- 6. Mentorship Handler ---
   const handleBookMentor = (mentorId: string, price: number) => {
-      // For this MVP, we create a session with a dummy email and redirect to payment
-      // In real app, we check logged in user
       const userSession = storageService.getUserSession();
-      const userEmail = userSession.verifiedEmail || "guest_user@example.com";
-      
+      const userEmail = userSession.verifiedEmail || "guest_student@example.com";
       const sessionId = storageService.createChatSession(mentorId, userEmail, price);
       navigate(`/payment/${sessionId}`);
   };
 
-  if (!company) return <div className="p-20 text-center">Company not found.</div>;
+  if (!college) return <div className="p-20 text-center">College not found.</div>;
 
   return (
     <div className="max-w-5xl mx-auto px-6 py-12">
@@ -160,31 +127,18 @@ const CompanyDetail: React.FC = () => {
 
       {/* Header */}
       <div className="flex flex-col md:flex-row gap-8 items-start mb-10">
-        <img src={company.logo} alt={company.name} className="w-24 h-24 md:w-32 md:h-32 rounded-3xl shadow-lg object-cover" />
+        <img src={college.logo} alt={college.name} className="w-24 h-24 md:w-32 md:h-32 rounded-3xl shadow-lg object-cover" />
         <div className="flex-grow">
-          <h1 className="text-4xl font-extrabold tracking-tight mb-2">{company.name}</h1>
-          <p className="text-lg text-gray-500 font-light mb-4">{company.description}</p>
+          <h1 className="text-4xl font-extrabold tracking-tight mb-2">{college.name}</h1>
+          <p className="text-lg text-gray-500 font-light mb-4">{college.description}</p>
+          <div className="text-sm text-gray-400 mb-4">{college.city}, {college.state}</div>
           
-          <div className="flex items-center gap-8">
-            <div className="flex flex-col">
-              <span className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Smart Rating</span>
-              <div className="flex items-center gap-2">
-                <StarRating rating={smartRating} size="md" />
-                <span className="font-bold text-2xl text-gray-800">{smartRating.toFixed(1)}</span>
-              </div>
-              <span className="text-xs text-green-600 mt-1">Weighted by recency</span>
-            </div>
-
-            <div className="h-12 w-px bg-gray-200"></div>
-
-             <div className="flex flex-col">
-              <span className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Ghosting Rate</span>
-              <div className="flex items-center gap-2">
-                <span className={`font-bold text-2xl ${ghostingRate > 50 ? 'text-red-500' : 'text-gray-800'}`}>{ghostingRate}%</span>
-                {ghostingRate > 50 && <span className="text-xl">👻</span>}
-              </div>
-              <span className="text-xs text-gray-400 mt-1">based on {interviews.length} interviews</span>
-            </div>
+          <div className="flex items-center gap-4">
+             <div className="flex items-center gap-2">
+                <StarRating rating={avgRating} size="md" />
+                <span className="font-bold text-2xl text-gray-800">{avgRating.toFixed(1)}</span>
+             </div>
+             <span className="text-sm text-gray-400">({reviews.length} reviews)</span>
           </div>
         </div>
       </div>
@@ -192,9 +146,7 @@ const CompanyDetail: React.FC = () => {
       {/* Navigation Tabs */}
       <div className="flex border-b border-gray-100 mb-8 overflow-x-auto">
         <button onClick={() => setActiveTab('overview')} className={`px-6 py-3 font-medium text-sm whitespace-nowrap border-b-2 transition-colors ${activeTab === 'overview' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-900'}`}>Overview & Reviews</button>
-        <button onClick={() => setActiveTab('interviews')} className={`px-6 py-3 font-medium text-sm whitespace-nowrap border-b-2 transition-colors ${activeTab === 'interviews' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-900'}`}>Ghosting & Interviews</button>
-        <button onClick={() => setActiveTab('salaries')} className={`px-6 py-3 font-medium text-sm whitespace-nowrap border-b-2 transition-colors ${activeTab === 'salaries' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-900'}`}>Salary Reality</button>
-        <button onClick={() => setActiveTab('qa')} className={`px-6 py-3 font-medium text-sm whitespace-nowrap border-b-2 transition-colors ${activeTab === 'qa' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-900'}`}>Ask an Employee</button>
+        <button onClick={() => setActiveTab('qa')} className={`px-6 py-3 font-medium text-sm whitespace-nowrap border-b-2 transition-colors ${activeTab === 'qa' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-900'}`}>Ask a Student</button>
         <button onClick={() => setActiveTab('mentors')} className={`px-6 py-3 font-medium text-sm whitespace-nowrap border-b-2 transition-colors ${activeTab === 'mentors' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-900'}`}>Mentorship <span className="ml-1 text-[10px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full font-bold">NEW</span></button>
       </div>
 
@@ -202,19 +154,40 @@ const CompanyDetail: React.FC = () => {
       {activeTab === 'overview' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-12 animate-fade-in">
           <div className="lg:col-span-2 space-y-8">
+            
+            {/* Detailed Stats */}
+            {collegeStats && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-8">
+                    {[
+                        { l: 'Placement', v: collegeStats.placement },
+                        { l: 'Mess Food', v: collegeStats.mess },
+                        { l: 'Wi-Fi', v: collegeStats.wifi },
+                        { l: 'Infrastructure', v: collegeStats.infra },
+                        { l: 'Strictness', v: collegeStats.strictness, reverse: true }, // Higher strictness might be red
+                    ].map(s => (
+                        <div key={s.l} className="p-4 bg-gray-50 rounded-2xl border border-gray-100 text-center">
+                            <div className="text-xs text-gray-400 font-bold uppercase mb-1">{s.l}</div>
+                            <div className={`text-xl font-bold ${s.reverse ? (Number(s.v) > 3 ? 'text-red-500' : 'text-green-600') : (Number(s.v) > 3 ? 'text-green-600' : 'text-orange-500')}`}>
+                                {s.v}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
+
             <div className="flex justify-between items-center">
                <h2 className="text-2xl font-bold">Reviews</h2>
                <div className="flex gap-4">
-                 <select 
-                    value={sortBy} 
-                    onChange={(e) => setSortBy(e.target.value as any)}
-                    className="px-3 py-2 border rounded-xl text-sm font-medium text-gray-600 focus:outline-none"
-                 >
-                    <option value="recent">Most Recent</option>
-                    <option value="helpful">Most Helpful</option>
-                    <option value="rating">Highest Rated</option>
-                 </select>
-                 <Link to={`/company/${id}/review`} className="px-5 py-2 bg-indigo-600 text-white rounded-xl font-bold text-sm shadow-md hover:bg-indigo-700 transition-colors">Write Review</Link>
+                  <select 
+                      value={sortBy} 
+                      onChange={(e) => setSortBy(e.target.value as any)}
+                      className="px-3 py-2 border rounded-xl text-sm font-medium text-gray-600 focus:outline-none"
+                  >
+                      <option value="recent">Most Recent</option>
+                      <option value="helpful">Most Helpful</option>
+                      <option value="rating">Highest Rated</option>
+                  </select>
+                  <Link to={`/company/${id}/review`} className="px-5 py-2 bg-indigo-600 text-white rounded-xl font-bold text-sm shadow-md hover:bg-indigo-700 transition-colors">Write Review</Link>
                </div>
             </div>
             
@@ -225,16 +198,24 @@ const CompanyDetail: React.FC = () => {
                     <h3 className="text-xl font-bold mb-1">{review.title}</h3>
                     <div className="flex items-center gap-3 text-sm text-gray-500">
                       <StarRating rating={review.rating} size="sm" />
-                      <span>{review.department} Department</span>
+                      <span>{review.department}</span>
                       <span className="text-gray-300">•</span>
                       <span>{new Date(review.createdAt).toLocaleDateString()}</span>
                     </div>
                   </div>
-                   {review.isVerified && <span className="bg-green-50 text-green-700 text-[10px] font-bold px-2 py-1 rounded-full uppercase">Verified</span>}
+                  {/* Privacy Logic: Show 'Verified Student' if anonymous but verified */}
+                   {review.isVerified ? (
+                       <span className="bg-green-50 text-green-700 text-[10px] font-bold px-2 py-1 rounded-full uppercase">
+                           Verified Student {review.batchYear ? `, ${review.batchYear} Batch` : ''}
+                       </span>
+                   ) : (
+                       <span className="text-gray-400 text-xs">{review.userEmail.split('@')[0]}</span>
+                   )}
                 </div>
                 <div className="space-y-4 mb-4">
                   <p><span className="font-bold text-green-600 text-sm uppercase">Pros: </span><span className="text-gray-600">{review.pros}</span></p>
                   <p><span className="font-bold text-red-600 text-sm uppercase">Cons: </span><span className="text-gray-600">{review.cons}</span></p>
+                  {review.advice && <p><span className="font-bold text-indigo-600 text-sm uppercase">Advice to Juniors: </span><span className="text-gray-600 italic">"{review.advice}"</span></p>}
                 </div>
                 <div className="flex items-center gap-2">
                     <button 
@@ -247,147 +228,31 @@ const CompanyDetail: React.FC = () => {
                 </div>
               </div>
             ))}
+            {reviews.length === 0 && <p className="text-gray-400">No reviews yet. Be the first!</p>}
           </div>
 
           <div className="space-y-8">
              {/* AI Summary */}
              <div className="p-8 bg-indigo-50/50 rounded-3xl border border-indigo-100">
                 <h3 className="font-bold text-indigo-900 mb-2">AI Summary</h3>
-                <p className="text-indigo-800/80 text-sm leading-relaxed">{isSummaryLoading ? 'Analyzing...' : aiSummary}</p>
-             </div>
-
-             {/* Department Vibe */}
-             <div className="p-8 bg-white border border-gray-100 rounded-3xl">
-                <h3 className="font-bold mb-6">Department Vibe</h3>
-                <div className="space-y-4">
-                    {deptRatings.length > 0 ? deptRatings.map(d => (
-                        <div key={d.dept} className="flex items-center justify-between">
-                            <span className="text-sm font-medium text-gray-600">{d.dept}</span>
-                            <div className="flex items-center gap-2">
-                                <div className="h-2 w-24 bg-gray-100 rounded-full overflow-hidden">
-                                    <div className="h-full bg-yellow-400" style={{width: `${(d.avg/5)*100}%`}}></div>
-                                </div>
-                                <span className="text-sm font-bold">{d.avg.toFixed(1)}</span>
-                            </div>
-                        </div>
-                    )) : <p className="text-sm text-gray-400">No department data yet.</p>}
-                </div>
+                <p className="text-indigo-800/80 text-sm leading-relaxed">{isSummaryLoading ? 'Analyzing...' : (aiSummary || "Not enough data yet.")}</p>
              </div>
           </div>
         </div>
       )}
 
-      {/* TAB CONTENT: INTERVIEWS (GHOSTING) */}
-      {activeTab === 'interviews' && (
-          <div className="max-w-3xl animate-fade-in">
-              <div className="flex justify-between items-center mb-8">
-                  <div>
-                    <h2 className="text-2xl font-bold">Interview Experiences</h2>
-                    <p className="text-gray-500 text-sm">See how they treat candidates.</p>
-                  </div>
-                  <Link to={`/company/${id}/interview`} className="px-5 py-2 border-2 border-indigo-600 text-indigo-600 rounded-xl font-bold text-sm hover:bg-indigo-50 transition-colors">Add Experience</Link>
-              </div>
-
-              <div className="p-8 bg-gray-50 rounded-3xl mb-8 flex items-center justify-between">
-                  <div>
-                      <h3 className="text-lg font-bold text-gray-900">Ghosting Meter</h3>
-                      <p className="text-sm text-gray-500">Percentage of candidates ghosted</p>
-                  </div>
-                  <div className="w-1/2">
-                      <div className="h-4 w-full bg-gray-200 rounded-full overflow-hidden">
-                          <div className={`h-full ${ghostingRate < 30 ? 'bg-green-500' : ghostingRate < 60 ? 'bg-yellow-500' : 'bg-red-500'}`} style={{width: `${ghostingRate}%`}}></div>
-                      </div>
-                      <div className="flex justify-between text-xs text-gray-400 mt-1">
-                          <span>Safe</span>
-                          <span>Run away</span>
-                      </div>
-                  </div>
-                  <span className="text-3xl font-bold ml-4">{ghostingRate}%</span>
-              </div>
-
-              <div className="space-y-4">
-                  {interviews.map(interview => (
-                      <div key={interview.id} className="p-6 border border-gray-100 rounded-2xl bg-white flex justify-between items-center">
-                          <div>
-                              <div className="font-bold text-lg">{interview.role}</div>
-                              <div className="flex gap-3 text-sm mt-1">
-                                  <span className={`px-2 py-0.5 rounded text-xs font-bold ${interview.experience === 'Positive' ? 'bg-green-100 text-green-700' : interview.experience === 'Negative' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'}`}>{interview.experience}</span>
-                                  <span className="text-gray-500">Difficulty: {interview.difficulty}/5</span>
-                              </div>
-                          </div>
-                          {interview.wasGhosted && (
-                              <div className="flex flex-col items-center text-red-500">
-                                  <span className="text-2xl">👻</span>
-                                  <span className="text-xs font-bold uppercase">Ghosted</span>
-                              </div>
-                          )}
-                      </div>
-                  ))}
-                  {interviews.length === 0 && <p className="text-gray-400 italic">No interview data yet.</p>}
-              </div>
-          </div>
-      )}
-
-      {/* TAB CONTENT: SALARIES */}
-      {activeTab === 'salaries' && (
-          <div className="max-w-3xl animate-fade-in">
-               <div className="flex justify-between items-center mb-8">
-                  <div>
-                    <h2 className="text-2xl font-bold">Salary Reality</h2>
-                    <p className="text-gray-500 text-sm">Base vs. Actual In-Hand Cash.</p>
-                  </div>
-                  <Link to={`/company/${id}/salary`} className="px-5 py-2 bg-green-600 text-white rounded-xl font-bold text-sm shadow-md hover:bg-green-700 transition-colors">Submit Salary</Link>
-              </div>
-
-              {salaryStats ? (
-                  <div className="grid grid-cols-2 gap-6 mb-10">
-                      <div className="p-6 bg-green-50 rounded-2xl border border-green-100 text-center">
-                          <p className="text-green-800 text-sm font-bold uppercase tracking-wider mb-1">Average CTC</p>
-                          <p className="text-3xl font-extrabold text-green-900">${salaryStats.avgCTC.toLocaleString()}</p>
-                          <p className="text-xs text-green-600/70">per year</p>
-                      </div>
-                      <div className="p-6 bg-blue-50 rounded-2xl border border-blue-100 text-center">
-                          <p className="text-blue-800 text-sm font-bold uppercase tracking-wider mb-1">Average In-Hand</p>
-                          <p className="text-3xl font-extrabold text-blue-900">${salaryStats.avgInHand.toLocaleString()}</p>
-                          <p className="text-xs text-blue-600/70">per month</p>
-                      </div>
-                  </div>
-              ) : (
-                  <div className="p-10 bg-gray-50 rounded-3xl text-center mb-10">
-                      <p className="text-gray-400">No salary data submitted yet.</p>
-                  </div>
-              )}
-
-              <h3 className="font-bold text-lg mb-4">Recent Submissions</h3>
-              <div className="space-y-4">
-                  {salaries.map(s => (
-                      <div key={s.id} className="p-5 border border-gray-100 rounded-2xl flex justify-between items-center">
-                          <div>
-                              <div className="font-bold">{s.role}</div>
-                              <div className="text-sm text-gray-500">{s.yearsOfExperience} years exp • {s.location}</div>
-                          </div>
-                          <div className="text-right">
-                              <div className="font-mono text-sm"><span className="text-gray-400">CTC:</span> ${s.ctc.toLocaleString()}</div>
-                              <div className="font-mono font-bold text-green-600"><span className="text-gray-400 font-normal">In-Hand:</span> ${s.inHand.toLocaleString()}</div>
-                          </div>
-                      </div>
-                  ))}
-              </div>
-          </div>
-      )}
-
       {/* TAB CONTENT: Q&A */}
       {activeTab === 'qa' && (
           <div className="max-w-3xl animate-fade-in">
-              <h2 className="text-2xl font-bold mb-2">Ask an Employee</h2>
-              <p className="text-gray-500 mb-8">Anonymous questions answered by verified staff.</p>
+              <h2 className="text-2xl font-bold mb-2">Ask a Student</h2>
+              <p className="text-gray-500 mb-8">Anonymous questions answered by verified students.</p>
 
               <form onSubmit={handleAskQuestion} className="flex gap-4 mb-10">
                   <input 
                     type="text" 
                     value={newQuestion}
                     onChange={(e) => setNewQuestion(e.target.value)}
-                    placeholder="Ask something (e.g. Is the WLB actually good?)" 
+                    placeholder="Ask something (e.g. How is the dorm food?)" 
                     className="flex-grow p-4 border border-gray-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                   <button type="submit" className="px-6 bg-indigo-600 text-white font-bold rounded-2xl hover:bg-indigo-700 transition-colors">Ask</button>
@@ -406,7 +271,7 @@ const CompanyDetail: React.FC = () => {
                                           {a.isVerifiedEmployee ? (
                                               <span className="flex items-center gap-1 text-green-600 font-bold bg-green-50 px-2 py-0.5 rounded">
                                                   <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.64.304 1.24.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" /></svg>
-                                                  Verified Employee
+                                                  Verified
                                               </span>
                                           ) : <span className="text-gray-400">Public User</span>}
                                           <span className="text-gray-300">•</span>
@@ -429,18 +294,18 @@ const CompanyDetail: React.FC = () => {
                                 onClick={() => handleAnswerSubmit(q.id, true)} 
                                 className="px-4 py-2 text-xs font-bold bg-indigo-100 text-indigo-700 rounded-xl hover:bg-indigo-200"
                              >
-                                Answer as Verified
+                                Verified Answer
                              </button>
                              <button 
                                 onClick={() => handleAnswerSubmit(q.id, false)} 
                                 className="px-4 py-2 text-xs font-bold bg-gray-100 text-gray-600 rounded-xl hover:bg-gray-200"
                              >
-                                Answer
+                                Public Answer
                              </button>
                           </div>
                       </div>
                   ))}
-                  {questions.length === 0 && <p className="text-gray-400">No questions yet. Be the first to ask!</p>}
+                  {questions.length === 0 && <p className="text-gray-400">No questions yet. Ask something!</p>}
               </div>
           </div>
       )}
@@ -507,4 +372,4 @@ const CompanyDetail: React.FC = () => {
   );
 };
 
-export default CompanyDetail;
+export default CollegeDetail;
